@@ -19,6 +19,7 @@ import logging
 import os
 import sys
 
+import zaza.charm_lifecycle.before_deploy as before_deploy
 import zaza.charm_lifecycle.configure as configure
 import zaza.charm_lifecycle.destroy as destroy
 import zaza.charm_lifecycle.utils as utils
@@ -40,6 +41,7 @@ def run_env_deployment(env_deployment, keep_model=False):
     """
     config_steps = utils.get_config_steps()
     test_steps = utils.get_test_steps()
+    before_deploy_steps = utils.get_before_deploy_steps()
 
     model_aliases = {model_deploy.model_alias: model_deploy.model_name
                      for model_deploy in env_deployment.model_deploys}
@@ -47,6 +49,13 @@ def run_env_deployment(env_deployment, keep_model=False):
 
     for deployment in env_deployment.model_deploys:
         prepare.prepare(deployment.model_name)
+
+    for deployment in env_deployment.model_deploys:
+        # Before deploy
+        before_deploy.before_deploy(
+            deployment.model_name,
+            before_deploy_steps.get(deployment.model_alias, [])
+        )
 
     for deployment in env_deployment.model_deploys:
         deploy.deploy(
