@@ -52,17 +52,41 @@ class TestCharmLifecycleDeploy(ut_utils.BaseTestCase):
             lc_deploy.get_overlay_template_dir(),
             'tests/bundles/overlays')
 
-    def test_get_jinja2_env(self):
+    def test_get_jinja2_loader(self):
         self.patch_object(lc_deploy, 'get_overlay_template_dir')
+        self.patch_object(lc_deploy.os, 'path')
+        self.patch_object(lc_deploy.zaza.controller, 'get_cloud_type')
         self.get_overlay_template_dir.return_value = 'mytemplatedir'
-        self.patch_object(lc_deploy.jinja2, 'Environment')
+        self.patch_object(lc_deploy.jinja2, 'ChoiceLoader')
         self.patch_object(lc_deploy.jinja2, 'FileSystemLoader')
+        self.path.join.return_value = 'mytemplatedir/someprovider'
+        self.path.exists.return_value = False
+        self.path.isdir.return_value = False
+        lc_deploy.get_jinja2_loader()
+        self.assertFalse(self.ChoiceLoader.called)
+        self.FileSystemLoader.assert_called_once_with('mytemplatedir')
+        self.path.exists.return_value = True
+        self.path.isdir.return_value = True
+        self.FileSystemLoader.reset_mock()
+        self.FileSystemLoader.side_effect = [
+            'mytemplatedir/someprovider', 'mytemplatedir']
+        lc_deploy.get_jinja2_loader()
+        self.ChoiceLoader.assert_called_once_with(
+            ['mytemplatedir/someprovider', 'mytemplatedir'])
+        self.FileSystemLoader.assert_has_calls([
+            mock.call('mytemplatedir/someprovider'),
+            mock.call('mytemplatedir'),
+        ])
+
+    def test_get_jinja2_env(self):
+        self.patch_object(lc_deploy, 'get_jinja2_loader')
+        self.patch_object(lc_deploy.jinja2, 'Environment')
         jinja_env_mock = mock.MagicMock()
         self.Environment.return_value = jinja_env_mock
         self.assertEqual(
             lc_deploy.get_jinja2_env(),
             jinja_env_mock)
-        self.FileSystemLoader.assert_called_once_with('mytemplatedir')
+        self.get_jinja2_loader.assert_called_once_with()
 
     def test_get_template_name(self):
         self.assertEqual(
@@ -114,6 +138,7 @@ class TestCharmLifecycleDeploy(ut_utils.BaseTestCase):
         self.get_template_overlay_context.return_value = {}
         self.patch_object(lc_deploy.sys, 'exit')
         self.patch_object(lc_deploy.logging, 'error')
+        self.patch_object(lc_deploy, 'get_jinja2_loader', return_value=None)
         jinja2_env = lc_deploy.get_jinja2_env()
         template = jinja2_env.from_string('{{required_variable}}')
         m = mock.mock_open()
@@ -287,9 +312,9 @@ class TestCharmLifecycleDeploy(ut_utils.BaseTestCase):
         self.patch_object(lc_deploy, 'render_overlays')
         self.patch_object(lc_deploy.utils, 'check_output_logging')
         self.render_overlays.return_value = []
-        lc_deploy.deploy_bundle('bun.yaml', 'newmodel')
+        lc_deploy.deploy_bundle('bun.yaml', 'newmodel', force=True)
         self.check_output_logging.assert_called_once_with(
-            ['juju', 'deploy', '-m', 'newmodel', 'bun.yaml'])
+            ['juju', 'deploy', '-m', 'newmodel', 'bun.yaml', '--force'])
 
     def test_deploy(self):
         self.patch_object(lc_deploy.zaza.model, 'wait_for_application_states')
@@ -298,7 +323,8 @@ class TestCharmLifecycleDeploy(ut_utils.BaseTestCase):
         self.patch_object(lc_deploy, 'deploy_bundle')
         lc_deploy.deploy('bun.yaml', 'newmodel')
         self.deploy_bundle.assert_called_once_with('bun.yaml', 'newmodel',
-                                                   model_ctxt=None)
+                                                   model_ctxt=None,
+                                                   force=False)
         self.wait_for_application_states.assert_called_once_with(
             'newmodel',
             {})
@@ -314,7 +340,8 @@ class TestCharmLifecycleDeploy(ut_utils.BaseTestCase):
         self.patch_object(lc_deploy, 'deploy_bundle')
         lc_deploy.deploy('bun.yaml', 'newmodel')
         self.deploy_bundle.assert_called_once_with('bun.yaml', 'newmodel',
-                                                   model_ctxt=None)
+                                                   model_ctxt=None,
+                                                   force=False)
         self.wait_for_application_states.assert_called_once_with(
             'newmodel',
             {'vault': {
@@ -326,7 +353,8 @@ class TestCharmLifecycleDeploy(ut_utils.BaseTestCase):
         self.patch_object(lc_deploy, 'deploy_bundle')
         lc_deploy.deploy('bun.yaml', 'newmodel', wait=False)
         self.deploy_bundle.assert_called_once_with('bun.yaml', 'newmodel',
-                                                   model_ctxt=None)
+                                                   model_ctxt=None,
+                                                   force=False)
         self.assertFalse(self.wait_for_application_states.called)
 
     def test_parser(self):
@@ -358,3 +386,13 @@ class TestCharmLifecycleDeploy(ut_utils.BaseTestCase):
             '--log', 'DEBUG'
         ])
         self.assertEqual(args.loglevel, 'DEBUG')
+
+    def test_parser_force(self):
+        args = lc_deploy.parse_args(['-m', 'model', '-b', 'bundle.yaml'])
+        self.assertFalse(args.force)
+        # Now test we can override
+        args = lc_deploy.parse_args(['-m', 'model', '-b', 'bundle.yaml',
+                                     '--force'])
+        self.assertTrue(args.force)
+        args = lc_deploy.parse_args(['-m', 'model', '-b', 'bundle.yaml', '-f'])
+        self.assertTrue(args.force)

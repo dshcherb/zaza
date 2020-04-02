@@ -21,6 +21,7 @@ import sys
 import tempfile
 import yaml
 
+import zaza.controller
 import zaza.model
 import zaza.charm_lifecycle.utils as utils
 import zaza.utilities.cli as cli_utils
@@ -87,15 +88,33 @@ def get_overlay_template_dir():
     return DEFAULT_OVERLAY_TEMPLATE_DIR
 
 
+def get_jinja2_loader():
+    """Inspect the template directory and set up appropriate loader.
+
+    :returns: Jinja2 loader
+    :rtype: jinja2.loaders.BaseLoader
+    """
+    template_dir = get_overlay_template_dir()
+    provider_template_dir = os.path.join(
+        template_dir, zaza.controller.get_cloud_type())
+    if (os.path.exists(provider_template_dir) and
+            os.path.isdir(provider_template_dir)):
+        return jinja2.ChoiceLoader([
+            jinja2.FileSystemLoader(provider_template_dir),
+            jinja2.FileSystemLoader(template_dir),
+        ])
+    else:
+        return jinja2.FileSystemLoader(template_dir)
+
+
 def get_jinja2_env():
     """Return a jinja2 environment that can be used to render templates from.
 
     :returns: Jinja2 template loader
     :rtype: jinja2.Environment
     """
-    template_dir = get_overlay_template_dir()
     return jinja2.Environment(
-        loader=jinja2.FileSystemLoader(template_dir),
+        loader=get_jinja2_loader(),
         undefined=jinja2.StrictUndefined
     )
 
@@ -273,8 +292,11 @@ def render_overlays(bundle, target_dir, model_ctxt=None):
     return overlays
 
 
-def deploy_bundle(bundle, model, model_ctxt=None):
+def deploy_bundle(bundle, model, model_ctxt=None, force=False):
     """Deploy the given bundle file in the specified model.
+
+    The force param is used to enable zaza testing with Juju with charms
+    that would be rejected by juju (e.g. series not supported).
 
     :param bundle: Path to bundle file
     :type bundle: str
@@ -283,10 +305,14 @@ def deploy_bundle(bundle, model, model_ctxt=None):
     :param model_ctxt: Additional context to be used when rendering bundle
                        templates.
     :type model_ctxt: {}
+    :param force: Pass the force parameter if True
+    :type force: Boolean
     """
     logging.info("Deploying bundle '{}' on to '{}' model"
                  .format(bundle, model))
     cmd = ['juju', 'deploy', '-m', model, bundle]
+    if force:
+        cmd.append('--force')
     with tempfile.TemporaryDirectory() as tmpdirname:
         for overlay in render_overlays(bundle, tmpdirname,
                                        model_ctxt=model_ctxt):
@@ -296,7 +322,7 @@ def deploy_bundle(bundle, model, model_ctxt=None):
         utils.check_output_logging(cmd)
 
 
-def deploy(bundle, model, wait=True, model_ctxt=None):
+def deploy(bundle, model, wait=True, model_ctxt=None, force=False):
     """Run all steps to complete deployment.
 
     :param bundle: Path to bundle file
@@ -308,9 +334,11 @@ def deploy(bundle, model, wait=True, model_ctxt=None):
     :param model_ctxt: Additional context to be used when rendering bundle
                        templates.
     :type model_ctxt: {}
+    :param force: Pass the force parameter if True
+    :type force: Boolean
     """
     run_report.register_event_start('Deploy Bundle')
-    deploy_bundle(bundle, model, model_ctxt=model_ctxt)
+    deploy_bundle(bundle, model, model_ctxt=model_ctxt, force=force)
     run_report.register_event_finish('Deploy Bundle')
     if wait:
         run_report.register_event_start('Wait for Deployment')
@@ -338,6 +366,9 @@ def parse_args(args):
     parser.add_argument('-b', '--bundle',
                         help='Bundle name (excluding file ext)',
                         required=True)
+    parser.add_argument('-f', '--force', dest='force',
+                        help='Pass --force to the juju deploy command',
+                        action='store_true')
     parser.add_argument('--no-wait', dest='wait',
                         help='Do not wait for deployment to settle',
                         action='store_false')
@@ -351,5 +382,8 @@ def main():
     """Deploy bundle."""
     args = parse_args(sys.argv[1:])
     cli_utils.setup_logging(log_level=args.loglevel.upper())
-    deploy(args.bundle, args.model, wait=args.wait)
+    if args.force:
+        logging.warn("Using the --force argument for 'juju deploy'. Note "
+                     "that this disables juju checks for compatibility.")
+    deploy(args.bundle, args.model, wait=args.wait, force=args.force)
     run_report.output_event_report()
